@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from typing import Any
 
 import requests
@@ -31,26 +32,33 @@ class GrokClient:
             "location, seniority, certifications, nice_to_have_skills.\n\n"
             f"Title: {title}\n\nDescription:\n{description}"
         )
-        response = requests.post(
-            settings.grok_api_url,
-            headers={
-                "Authorization": f"Bearer {settings.grok_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.grok_model,
-                "messages": [
-                    {"role": "system", "content": "You extract structured recruiting requirements."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.1,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                settings.grok_api_url,
+                headers={
+                    "Authorization": f"Bearer {settings.grok_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.grok_model,
+                    "messages": [
+                        {"role": "system", "content": "You extract structured recruiting requirements."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 2048,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as error:
+            return self._handle_grok_error(error)
+        except requests.exceptions.RequestException as error:
+            raise ValueError(f"Grok API request failed: {error}") from error
+
         body = response.json()
         content = body["choices"][0]["message"]["content"]
-        return json.loads(content)
+        return self._parse_grok_response(content)
 
     def _request_grok_explanation(
         self,
@@ -59,34 +67,136 @@ class GrokClient:
         signal_results: list[dict[str, Any]],
         overall_score: float,
     ) -> dict[str, Any]:
-        prompt = (
-            "Explain this recruiting recommendation. Return only JSON with keys: "
-            "summary, strengths, weaknesses, missing_skills, recommendation.\n\n"
-            f"Job:\n{json.dumps(job)}\n\n"
-            f"Candidate:\n{json.dumps(candidate)}\n\n"
-            f"Overall score: {overall_score}\n\n"
-            f"Signal results:\n{json.dumps(signal_results)}"
-        )
-        response = requests.post(
-            settings.grok_api_url,
-            headers={
-                "Authorization": f"Bearer {settings.grok_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.grok_model,
-                "messages": [
-                    {"role": "system", "content": "You explain candidate rankings for recruiters."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.2,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
+        prompt = self._build_explanation_prompt(job, candidate, signal_results, overall_score)
+        try:
+            response = requests.post(
+                settings.grok_api_url,
+                headers={
+                    "Authorization": f"Bearer {settings.grok_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.grok_model,
+                    "messages": [
+                        {"role": "system", "content": "You explain candidate rankings for recruiters."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2048,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as error:
+            return self._handle_grok_error(error)
+        except requests.exceptions.RequestException as error:
+            raise ValueError(f"Grok API request failed: {error}") from error
+
         body = response.json()
         content = body["choices"][0]["message"]["content"]
-        return json.loads(content)
+        return self._parse_grok_response(content)
+
+    def _handle_grok_error(self, error: requests.exceptions.HTTPError) -> dict[str, Any]:
+        if error.response is not None and error.response.status_code == 429:
+            retry_after = 5
+            try:
+                error_data = error.response.json()
+                if "error" in error_data and "message" in error_data["error"]:
+                    msg = error_data["error"]["message"]
+                    match = re.search(r"try again in ([0-9.]+)s", msg)
+                    if match:
+                        retry_after = float(match.group(1)) + 1.0
+            except (ValueError, KeyError, IndexError):
+                pass
+
+            raise ValueError(
+                f"Grok rate limit hit (429). Retry after {retry_after:.1f}s. "
+                f"Or set USE_MOCK_AI=true to use fallback mode."
+            ) from error
+
+        response_text = error.response.text if error.response is not None else "<no response>"
+        raise ValueError(
+            f"Grok API returned HTTP error {error.response.status_code}: {response_text}"
+        ) from error
+
+    def _build_explanation_prompt(
+        self,
+        job: dict[str, Any],
+        candidate: dict[str, Any],
+        signal_results: list[dict[str, Any]],
+        overall_score: float,
+    ) -> str:
+        def format_list(items: list[Any], max_items: int = 8) -> str:
+            if not items:
+                return "None"
+            return ", ".join(str(item) for item in items[:max_items])
+
+        def truncate(text: str, max_length: int = 200) -> str:
+            return text if len(text) <= max_length else text[: max_length - 3].rstrip() + "..."
+
+        job_fields = [
+            f"Title: {job.get('title', '')}",
+            f"Company: {job.get('company_name', '')}",
+            f"Skills: {format_list(job.get('skills', []), max_items=8)}",
+            f"Experience: {job.get('experience', '')}",
+            f"Education: {job.get('education', '')}",
+            f"Location: {job.get('location', '')}",
+            f"Seniority: {job.get('seniority', '')}",
+        ]
+
+        candidate_fields = [
+            f"Name: {candidate.get('full_name', '')}",
+            f"Company: {candidate.get('current_company', '')}",
+            f"Location: {candidate.get('location', '')}",
+            f"Experience: {candidate.get('experience', '')}",
+            f"Skills: {format_list(candidate.get('skills', []), max_items=8)}",
+            f"Summary: {truncate(str(candidate.get('summary', '')))}",
+        ]
+
+        top_signals = sorted(signal_results, key=lambda item: item.get('contribution', 0), reverse=True)[:5]
+        signal_lines = [
+            f"{idx + 1}. {signal.get('signal_name', 'Unknown')} (score {round(signal.get('score', 0), 1)}): {signal.get('reason', '')}"
+            for idx, signal in enumerate(top_signals)
+        ]
+
+        return (
+            "Explain this recruiting recommendation. Return only JSON with keys: summary, strengths, weaknesses, missing_skills, recommendation. "
+            "Do not include markdown fences or any extra text outside the JSON object.\n\n"
+            "Job:\n"
+            + "\n".join(job_fields)
+            + "\n\nCandidate:\n"
+            + "\n".join(candidate_fields)
+            + "\n\nOverall score: "
+            + str(overall_score)
+            + "\n\nTop signals:\n"
+            + "\n".join(signal_lines)
+        )
+
+    def _parse_grok_response(self, content: str) -> dict[str, Any]:
+        content = content.strip()
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
+        if fenced_match:
+            content = fenced_match.group(1)
+        elif content.startswith("json\n") or content.startswith("json\r\n"):
+            content = content.splitlines(1)[1]
+        elif content.startswith("```") and content.endswith("```"):
+            stripped = content.strip("`").strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                content = stripped
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as error:
+            inner_match = re.search(r"(\{.*\})", content, re.DOTALL)
+            if inner_match:
+                try:
+                    return json.loads(inner_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            raise ValueError(
+                "Grok API returned invalid JSON. Check the raw response content. "
+                f"Response content: {content!r}"
+            ) from error
 
     def _heuristic_analysis(self, title: str, description: str) -> dict[str, Any]:
         text = f"{title}\n{description}"
@@ -197,6 +307,32 @@ class GrokClient:
             "recommendation": recommendation,
             "provider": "heuristic",
         }
+
+    def _parse_grok_response(self, content: str) -> dict[str, Any]:
+        content = content.strip()
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
+        if fenced_match:
+            content = fenced_match.group(1)
+        elif content.startswith("json\n") or content.startswith("json\r\n"):
+            content = content.splitlines(1)[1]
+        elif content.startswith("```") and content.endswith("```"):
+            stripped = content.strip("`").strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                content = stripped
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as error:
+            inner_match = re.search(r"(\{.*\})", content, re.DOTALL)
+            if inner_match:
+                try:
+                    return json.loads(inner_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            raise ValueError(
+                "Grok API returned invalid JSON. Check the raw response content. "
+                f"Response content: {content!r}"
+            ) from error
 
     def _first_match(self, text: str, patterns: dict[str, list[str]]) -> str:
         for label, keywords in patterns.items():

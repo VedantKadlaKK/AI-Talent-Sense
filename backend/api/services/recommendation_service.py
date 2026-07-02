@@ -1,4 +1,6 @@
 from collections import defaultdict
+import re
+import time
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -47,7 +49,7 @@ class RecommendationService:
             candidate = self.candidates.get(candidate_id)
             if candidate is None:
                 continue
-            explanation = self._explain(job, candidate, results, overall_score)
+            explanation = self._explain_with_retry(job, candidate, results, overall_score)
             stored.append(
                 self.recommendations.upsert(
                     candidate_id=candidate_id,
@@ -82,6 +84,29 @@ class RecommendationService:
             return 0
         weighted_score = sum(result.contribution for result in results) / total_weight
         return round(max(0, min(100, weighted_score)), 2)
+
+    def _explain_with_retry(
+        self,
+        job: Job,
+        candidate: Candidate,
+        results: list[SignalResult],
+        overall_score: float,
+        max_retries: int = 2,
+    ) -> dict[str, object]:
+        for attempt in range(max_retries + 1):
+            try:
+                return self._explain(job, candidate, results, overall_score)
+            except ValueError as error:
+                error_msg = str(error)
+                if "rate limit" in error_msg.lower() and attempt < max_retries:
+                    match = re.search(r"Retry after ([0-9.]+)s", error_msg)
+                    wait_time = float(match.group(1)) if match else 5.0
+                    time.sleep(wait_time)
+                    continue
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=error_msg,
+                ) from error
 
     def _explain(
         self,

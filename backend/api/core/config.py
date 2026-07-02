@@ -15,10 +15,10 @@ class Settings(BaseSettings):
     ]
 
     grok_api_key: str | None = None
-    grok_api_url: str = "https://api.x.ai/v1/chat/completions"
-    grok_model: str = "grok-2-latest"
+    grok_api_url: str = "https://api.groq.com/openai/v1/chat/completions"
+    grok_model: str = "openai/gpt-oss-20b"
 
-    use_mock_ai: bool = True
+    use_mock_ai: bool = False
 
     # NEW
     github_token: str | None = None
