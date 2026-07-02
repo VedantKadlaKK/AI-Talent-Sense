@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.Python
+.env
+.venv/
+venv/
+talent_sense.db
+.pytest_cache/
+
+node_modules/
+dist/
+.vite/
+*.local
+*.tsbuildinfo
+
+coverage/
+*.log
