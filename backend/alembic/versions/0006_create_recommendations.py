@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column("strengths", sa.JSON(), nullable=False),
         sa.Column("weaknesses", sa.JSON(), nullable=False),
         sa.Column("missing_skills", sa.JSON(), nullable=False),
-        sa.Column("recommendation", sa.String(length=80), nullable=False),
+        sa.Column("recommendation", sa.Text(), nullable=False),
         sa.Column("raw_ai_output", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),

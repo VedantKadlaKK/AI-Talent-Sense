@@ -20,7 +20,7 @@ class Recommendation(Base):
     strengths: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     weaknesses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     missing_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    recommendation: Mapped[str] = mapped_column(String(80), nullable=False, default="Review")
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False, default="Review")
     raw_ai_output: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
